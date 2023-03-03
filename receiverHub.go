@@ -109,10 +109,15 @@ func (r *ReceiverHub) stream() {
 	}
 
 	log.Debugf("Enabling device: %v", device)
+	log.Debugf("Enabling in stream 11:54")
 	device, err = screencapture.EnableQTConfig(device)
 	if err != nil {
+		log.Errorf("Error enabling QT config", err)
 		r.send <- toErrJSON(err, "Error enabling QT config")
 	}
+
+	log.Debugf("device actived: ", device.DetailsMap())
+
 	r.writer = NewNaluWriter(r)
 	adapter := screencapture.UsbAdapter{}
 	mp := screencapture.NewMessageProcessor(&adapter, r.stopReading, r.writer, false)
