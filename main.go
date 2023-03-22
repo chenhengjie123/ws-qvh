@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	// "github.com/danielpaulus/go-ios/usbmux"
-	"github.com/danielpaulus/quicktime_video_hack/screencapture"
+	"github.com/chenhengjie123/quicktime_video_hack/screencapture"
 	log "github.com/sirupsen/logrus"
 	"net/http"
 	"os"

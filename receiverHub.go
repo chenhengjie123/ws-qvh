@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/danielpaulus/quicktime_video_hack/screencapture"
+	"github.com/chenhengjie123/quicktime_video_hack/screencapture"
 	log "github.com/sirupsen/logrus"
 	"sync"
 	"time"
