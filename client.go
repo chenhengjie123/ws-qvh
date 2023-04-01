@@ -137,6 +137,7 @@ func (c *Client) stop() {
 }
 
 func (c *Client) stream(udid string) {
+	log.Debugf("create receiver hub for %s", udid)
 	c.receiver = c.hub.getOrCreateReceiver(udid)
 	go func() {
 		c.receiver.AddClient(c)
