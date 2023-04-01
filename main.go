@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 )
 
 type detailsEntry struct {
@@ -55,12 +56,15 @@ func startWebSocketServer(addr string) {
 	}()
 
 	<-stopSignal
+	log.Debugf("Receive stop signal, shutting down")
 	err := s.Shutdown(context.TODO())
 	if err != nil {
 		log.Error(err)
 	} else {
 		log.Info("No error on shutdown")
 	}
+	log.Debugf("Add 4 seconds delay for sending signal to stop connecting qvh clients")
+	time.Sleep(4 * time.Second)
 	<-shutdown
 	log.Info("Program finished")
 }
