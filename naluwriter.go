@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"github.com/chenhengjie123/quicktime_video_hack/screencapture/coremedia"
-	log "github.com/sirupsen/logrus"
+	// log "github.com/sirupsen/logrus"
 )
 
 var startCode = []byte{00, 00, 00, 01}
@@ -62,7 +62,7 @@ func (nw NaluWriter) writeNalu(bytes []byte) error {
 		return nil
 	}
 	if len(bytes) > 0 {
-		log.Debug("Send bytes " + string(startCode) + " with length: ", len(bytes))
+		// log.Debug("Send bytes " + string(startCode) + " with length: ", len(bytes))
 		nw.receiver.send <- append(startCode, bytes...)
 	}
 	return nil
