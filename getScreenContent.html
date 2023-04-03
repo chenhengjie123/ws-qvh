@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="X-UA-Compatible" content="ie=edge">
+        <title>{% block title %}Default title{% end %}</title>
+    
+        <link rel="stylesheet" href="/static/vendor/fontawesome-5.7.2/css/all.css">
+        <link rel="stylesheet" href="https://unpkg.zhimg.com/element-ui/lib/theme-chalk/index.css">
+        <link rel="stylesheet" href="https://unpkg.zhimg.com/bootstrap@4.2.1/dist/css/bootstrap.min.css">
+    
+        <script src="https://unpkg.zhimg.com/jquery@3.3.1/dist/jquery.min.js"></script>
+        <script src="https://unpkg.zhimg.com/vue@2.5.21/dist/vue.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/moment@2.23.0/moment.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/element-ui/2.4.11/index.js"></script>
+        <script src="https://unpkg.zhimg.com/bootstrap@4.2.1/dist/js/bootstrap.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/js-base64@2.5.1/base64.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js"></script>
+
+    </head>
+
+    <body>
+        <div id="content-wrapper" class="col-sm debugarea d-flex flex-column justify-content-center nopadding grow-0 height-auto-fill">
+            <section class="debugarea" style="height: 2rem; line-height: 2rem; padding: 0 10px; justify-self: start">
+              <span>
+                <i class="fas fa-mobile-alt cursor-pointer" :class='{"fa-rotate-90": landscape}'></i>
+              </span>
+              <span>
+                <i v-if="displayLinked" class="fas fa-link" style="color: green"></i>
+                <i v-else @click="mirrorDisplay" class="fas fa-unlink" style="color: red"></i>
+                <span @click="changeScreenQualityMode" class="cursor-pointer color-blue"
+                  v-text="screenQualityModeAndName[screenQualityMode]+ '(点击切换)'"></span>
+                <span>FPS: {{ display.fps }}</span>
+              </span>
+            </section>
+            <!-- screen body -->
+            <section class="screen debugarea d-flex grow-1 align-items-center justify-content-center flex-reset"
+              style="flex-basis: 0%; line-height: 0px">
+              <!-- <canvas ref="fgCanvas" class="canvas-fg" v-bind:style="canvasStyle"></canvas> -->
+              <canvas ref="bgCanvas" class="canvas-bg" v-bind:style="canvasStyle"></canvas>
+              <video
+                v-show="screenMode=='qvh'"
+                id="qvh-video"
+                ref="qvhVideo"
+                class="canvas-bg"
+                v-bind:style="canvasStyle"
+                autoplay
+                muted
+            />
+              <span class="finger finger-0" style="transform: translate3d(200px, 100px, 0px)"></span>
+              <span class="finger finger-1" style="transform: translate3d(200px, 100px, 0px)"></span>
+              <!-- <img style="z-index: 10" v-if="loading" src="/assets/loading.svg"> -->
+            </section>
+            <section class="footer d-flex justify-content-around debugarea">
+              <button class="btn btn-default grow-1" @click="pressHome">
+                <i class="fas fa-home"></i>
+              </button>
+            </section>
+          </div>
+
+          <script>
+            /* Image Pool */
+            function ImagePool(size) {
+                this.size = size
+                this.images = []
+                this.counter = 0
+            }
+
+            ImagePool.prototype.next = function () {
+                if (this.images.length < this.size) {
+                    var image = new Image()
+                    this.images.push(image)
+                    return image
+                } else {
+                    if (this.counter >= this.size) {
+                        // Reset for unlikely but theoretically possible overflow.
+                        this.counter = 0
+                    }
+                }
+
+                return this.images[this.counter++ % this.size]
+            }
+
+
+            vm = new Vue({
+        el: "#content-wrapper",
+        data: Object.assign({
+          activeName: 'common',
+          canvas: {
+            bg: null,
+            fg: null,
+            video: null
+          },
+          canvasStyle: {
+            opacity: 1,
+            width: '400px',
+            height: 'unset',
+            maxHeight: "unset",
+          },
+          rotation: 0,
+          session: {
+            id: '',
+            frameCount: 0,
+          },
+          display: {
+            width: 0,
+            height: 0,
+            fps: 0,
+            ws: null,
+          },
+          alert: {
+            buttons: [],
+            loading: false,
+            visible: false,
+          },
+          app: {
+            message: "",
+            finish: true,
+            isResign: true,
+            isOverride: false,
+            installSessionId: null,
+            logDialogVisible: false,
+            logOffset: 0,
+            installLog: "",
+            logTimer: null,
+            status: null
+          },
+          pageHidden: false,
+          imagePool: new ImagePool(100),
+          screenQualityMode: 'fpsFirst',
+          screenQualityModeAndName: {
+            'qualityFirst': '画质优先',
+            'fpsFirst': '流畅度优先'
+          },
+          frameRate: 15,
+          screenEventId: '',
+          wsScreenStartTime: 0,
+          appProcessList: [],
+          appProcessListLoading: false,
+          selectedAppProcess: null,
+          source: {
+            wdaUrl: "http://127.0.0.1:9200"
+          },
+          displayWSUrl: "ws://127.0.0.1:8003/ws\?stream=00008101000E5DD43C92001E%00%00%00%00%00%00%00%00%00%00%00%00%00%00%00%00", // 修改这里
+          screenMode: "qvh"
+        }),
+        computed: {
+          landscape() {
+            return this.display.width > this.display.height;
+          },
+          displayLinked() {
+            return this.display.ws !== null
+          }
+        },
+        methods: {
+          screenshot() {
+            $.ajax({
+              url: this.path2url("/screenshot"),
+              dataType: "json",
+            }).then(ret => {
+              if (window.navigator.msSaveOrOpenBlob) {
+                alert("IE is not supported !!!")
+                return
+              }
+              var a = document.createElement("a");
+              a.href = "data:image/jpeg;base64," + ret.value;
+              a.download = "screen-" + new Date().getTime() + ".jpg";
+              a.click();
+              setTimeout(function () {
+                document.body.removeChild(a);
+              }, 0);
+            })
+          },
+          appOpen(bundleId) {
+            return $.ajax({
+              method: "post",
+              url: this.path2url("/session"),
+              data: JSON.stringify({
+                capabilities: {
+                  alwaysMatch: {
+                    bundleId: bundleId,
+                    shouldWaitForQuiescence: true,
+                  }
+                }
+              })
+            }).then(ret => {
+              this.session.id = ret.sessionId
+            })
+          },
+          chooseAlertButtons() {
+            this.alert.buttons = []
+            this.alert.loading = true
+            return $.ajax({
+              method: "get",
+              url: this.path2url("/session/" + this.session.id + "/wda/alert/buttons")
+            }).then(ret => {
+              this.alert.buttons = ret.value
+              this.$nextTick(() => {
+                this.alert.visible = true
+              })
+              // this.$alert("未检测到系统弹窗")
+              // this.$alert("未知异常，打开开发者选项查看问题
+            }).always(() => {
+              this.alert.loading = false
+            })
+          },
+          alertAccept(name) {
+            let data = null;
+            if (typeof name === 'string' || name instanceof String) {
+              data = JSON.stringify({ name: name })
+            }
+            return $.ajax({
+              method: "post",
+              url: this.path2url("/session/" + this.session.id + "/alert/accept"),
+              data: data,
+            })
+          },
+          onUploadSelect(file) {
+            this.app.url = file.response.data.url;
+          },
+          onUpload(resp, file, files) {
+            if (!resp.success) {
+              this.$message({
+                message: resp.description,
+                type: "error",
+              })
+              return
+            }
+            this.app.url = resp.data.url;
+            return this.appInstall()
+          },
+          isFinish(status) {
+            return status === "success" || status === "fail"
+          },
+          clearTimer() {
+            if (this.app.logTimer) {
+              clearInterval(this.app.logTimer)
+              this.app.logTimer = null
+            }
+          },
+          scrollToBottom() {
+            this.$nextTick(() => {
+              scrollView = this.$refs.logScrollView
+              scrollView.style.height = '60vh'
+              scrollView.scrollTop = scrollView.scrollHeight
+            })
+          },
+          showFPS() {
+            let frame = this.session.frameCount;
+            setInterval(() => {
+              this.display.fps = this.session.frameCount - frame
+              frame = this.session.frameCount;
+              if (this.display.fps < 5 && this.display.fps >= 0 && this.display.ws) { // 加上 this.display.ws ，保障此时屏幕流是存在的
+                this.$message({
+                  message: "当前帧率过低，可能会影响体验",
+                  type: "warning",
+                })
+              }
+            }, 1000);
+          },
+          pressHome() {
+            let url = this.path2url("/wda/homescreen")
+            let controlEventId = this.udid + "_" + String(new Date().getTime())
+            let startTime = new Date().getTime()
+
+            return $.ajax({
+              url: url,
+              method: "POST",
+            }).then((resp) => {
+              let responseTime = new Date().getTime() - startTime
+
+              setTimeout(() => {
+                this.hotfix()
+              }, 500)
+            }).fail(ret => {
+              let responseTime = new Date().getTime() - startTime
+            })
+          },
+          getSessionId() {
+            return $.ajax({
+              method: "post",
+              url: this.path2url("/session"),
+              data: '{"capabilities": {}}',
+            }).then(ret => {
+              return ret.sessionId;
+            })
+          },
+          // hotfix() {
+          //   return $.ajax({
+          //     url: this.path2url("/status")
+          //   }).then(ret => {
+          //     if (ret.sessionId) {
+          //       return ret.sessionId
+          //     }
+          //     return this.getSessionId()
+          //   }).then((sessionId) => {
+          //     this.session.id = sessionId;
+          //     return $.ajax({
+          //       url: this.path2url("/session/" + this.session.id + "/window/size")
+          //     })
+          //   }).then(ret => {
+          //     if (ret.value.width && ret.value.height) { // width and height might be 0
+          //       this.display.width = ret.value.width;
+          //       this.display.height = ret.value.height;
+          //     }
+
+          //     // 管理员控制设备，且当前设备实际控制着是其他人的话，不要改任何配置，避免影响UI自动化
+          //     if (isAdmin && userEmail !== this.userId) {
+          //       console.log("Detected admin using other user's device, do not change any setting")
+          //       return
+          //     }
+          //     // 优化屏幕流畅度
+          //     if (this.source.wdaUrl.indexOf("192.168") != -1) {
+          //       // 国内节点，优先用高画质
+          //       this.screenQualityMode = 'qualityFirst'
+          //       this.frameRate = 30
+          //     }
+          //     this.changeScreenQuality()
+          //   })
+          // },
+          changeScreenQualityMode() {
+            if (this.screenQualityMode === Object.keys(this.screenQualityModeAndName)[0]) {
+              this.screenQualityMode = Object.keys(this.screenQualityModeAndName)[1]
+            } else {
+              this.screenQualityMode = Object.keys(this.screenQualityModeAndName)[0]
+            }
+
+            this.changeScreenQuality()
+          },
+          changeScreenQuality() {
+            customMjpegScalingFactorMap = {
+              "default": {
+                qualityFirst: 40, fpsFirst: 20
+              },
+              "375x667": { // iPhone 6/7/8
+                qualityFirst: 55, fpsFirst: 30
+              },
+              "414x736": { // iPhone 6/7/8 Plus
+                qualityFirst: 40, fpsFirst: 20
+              },
+              "414x896": { // iPhone XR/11/12/13
+                qualityFirst: 40, fpsFirst: 20
+              },
+              "390x844": { // iPhone 11/12/13 Pro
+                qualityFirst: 40, fpsFirst: 20
+              },
+              "375x812": { // iPhone 11/12/13 Pro Max
+                qualityFirst: 40, fpsFirst: 20
+              },
+              "320x568": { // iPhone SE3
+                qualityFirst: 50, fpsFirst: 30
+              }
+            }
+
+            // 根据 displayWidth 和 height ，设定合理的压缩率，保持流畅度同时降低带宽要求
+            customMjpegScalingFactor = customMjpegScalingFactorMap.default
+
+            customMjpegScalingFactorMapKey = this.display.width < this.display.height ? this.display.width + 'x' + this.display.height : this.display.height + 'x' + this.display.width
+
+            if (customMjpegScalingFactorMap.hasOwnProperty(customMjpegScalingFactorMapKey)) {
+              customMjpegScalingFactor = customMjpegScalingFactorMap[customMjpegScalingFactorMapKey][this.screenQualityMode]
+            } else {
+              customMjpegScalingFactor = customMjpegScalingFactorMap['default'][this.screenQualityMode]
+            }
+
+            // 自动设定帧率为指定值，元素层级为0，图片压缩率为指定值。已确认appium会自动重新创建session，新 session 不受此配置影响。
+            $.ajax({
+              method: "post",
+              url: this.path2url("/session/" + this.session.id + "/appium/settings"),
+              data: '{"settings": {"mjpegServerFramerate": ' + this.frameRate + ', "snapshotMaxDepth": 0, "mjpegServerScreenshotQuality": 5, "mjpegScalingFactor": ' + customMjpegScalingFactor + '}}',
+            })
+          },
+          
+          path2url(pathname) {
+            return this.source.wdaUrl + pathname
+          },
+          disableTouch() {
+            let element = this.canvas.bg;
+            element.style.cursor = 'not-allowed' // set el.style is not working
+            element.style.pointerEvents = "none"
+          },
+          enableTouch() {
+            let element = this.canvas.bg;
+            element.style.cursor = ''
+            element.style.pointerEvents = ""
+          },
+          mirrorDisplay() {
+            this.wsScreenStartTime = new Date().getTime()
+            let ws = new WebSocket(this.displayWSUrl)
+            this.display.ws = ws;
+            let that = this;
+            this.session.frameCount = 0
+
+            // 不同模式下，ws 二进制处理格式需要切换
+            if (this.screenMode === 'qvh') {
+              ws.binaryType = 'arraybuffer'
+            } else {
+              ws.binaryType = 'blob'
+            }
+
+            this.jmuxer = new JMuxer({
+              node: 'qvh-video',
+              mode: 'video',
+              flushingTime: 0,
+              maxDelay: 100,
+              // readFpsFromTrack: true,
+              debug: false
+            });
+
+            ws.onopen = () => {
+              console.log("screen connected")
+              this.canvasStyle.opacity = 1
+              this.enableTouch()
+              let checkFrameTimeInSeconds = 10
+
+              setTimeout(() => { // 10秒后检测帧数是否OK
+                if (that.session.frameCount < 15) {
+                  console.log("Didn't get more than 15 frames after connect, fail to show screen")
+                } else {
+                  console.log("Show screen successfully!")
+                }
+              }, checkFrameTimeInSeconds * 1000)
+            }
+            ws.onmessage = (message) => {
+              if (this.screenMode !== 'qvh' && message.data instanceof Blob) {
+                this.session.frameCount += 1
+                this.drawBlobImageToCanvas(message.data, this.canvas.bg, this.landscape)
+              } else if (this.screenMode === 'qvh' && typeof message.data == 'object') {
+                this.session.frameCount += 1
+                this.jmuxer.feed({
+                  video: new Uint8Array(message.data)
+                })
+              }
+            }
+            ws.onclose = (ev) => {
+              if (this.display.ws === ws) {
+                this.display.ws = null;
+                this.$message({
+                  showClose: true,
+                  message: "设备屏幕同步中断",
+                  type: "error",
+                })
+                this.canvasStyle.opacity = 0.5
+                this.disableTouch()
+              }
+            },
+            ws.onerror = function (ev) {
+              console.log("screen websocket error", ev)
+            }
+          },
+          closeMirrorDisplay() {
+            this.canvasStyle.opacity = 0.5
+            if (this.display.ws) {
+              let ws = this.display.ws;
+              this.display.ws = null;
+              ws.close()
+            } else {
+              return new Promise((resolve) => resolve())
+            }
+          },
+          syncTouchpad() {
+            let bounds = {}
+            let element = this.canvas.bg;
+
+            function calculateBounds() {
+              var el = element;
+              bounds.w = el.offsetWidth
+              bounds.h = el.offsetHeight
+              bounds.x = 0
+              bounds.y = 0
+
+              while (el.offsetParent) {
+                bounds.x += el.offsetLeft
+                bounds.y += el.offsetTop
+                el = el.offsetParent
+              }
+            }
+
+            let coords = (e) => {
+              let x = e.pageX - bounds.x
+              let y = e.pageY - bounds.y
+              x = Math.max(0, Math.min(bounds.w, x))
+              y = Math.max(0, Math.min(bounds.h, y))
+
+              return {
+                fingerX: x + element.offsetLeft,
+                fingerY: y + element.offsetTop,
+                x: Math.floor(x / bounds.w * this.display.width),
+                y: Math.floor(y / bounds.h * this.display.height)
+              }
+            }
+
+
+            let mousePos = {
+              beganAt: null,
+              down: null,
+              up: null,
+            }
+
+            let wdaTouch = (x, y) => {
+              let controlEventId = this.udid + "_" + String(new Date().getTime())
+              let startTime = new Date().getTime()
+              let url = this.path2url("/session/" + this.session.id + "/wda/tap/0")
+              let data = JSON.stringify({ x, y })
+
+              return $.ajax({
+                method: "POST",
+                url: url,
+                data: data
+              }).then(resp => {
+                let responseTime = new Date().getTime() - startTime
+                return resp
+              }).fail(ret => {
+                let responseTime = new Date().getTime() - startTime
+                return ret
+              })
+            }
+
+            let wdaSwipe = (fromX, fromY, toX, toY, duration) => {
+              let controlEventId = this.udid + "_" + String(new Date().getTime())
+              let startTime = new Date().getTime()
+              let url = this.path2url("/session/" + this.session.id + "/wda/touch/perform")
+              let data = JSON.stringify({
+                  actions: [
+                    { action: "press", options: { x: fromX, y: fromY } },
+                    { action: "wait", options: { ms: duration > 17 ? duration : 100 } },// 必须大于17ms，否则 wda 会没反应。日常使用一般100毫秒比较正常
+                    { action: "moveTo", options: { x: toX, y: toY } },
+                    { action: "release", options: {} }
+                  ]
+                })
+
+              return $.ajax({ // 经过测试，相同移动轨迹，wda/touch/perform 比 wda/dragfromtoforduration 响应速度快不少，整体操作iPhoneX上从1.3s+缩短到0.5s内
+                url: url,
+                method: "POST",
+                data: data
+              }).then(resp => {
+                let responseTime = new Date().getTime() - startTime
+                return resp
+              }).fail(ret => {
+                let responseTime = new Date().getTime() - startTime
+                return ret
+              })
+            }
+
+            let mouseUpOperate = (x, y) => {
+              let duration = new Date() - mousePos.beganAt; // milliseconds
+              console.log("hold duration", duration);
+
+              const
+                startX = mousePos.down.x,
+                startY = mousePos.down.y,
+                moveX = Math.abs(startX - x),
+                moveY = Math.abs(startY - y);
+
+              if (moveX == 0 && moveY == 0) {
+                if (duration < 200) { // click
+                  // click
+                  console.log("touch", x, y)
+                  return wdaTouch(x, y)
+                } else {
+                  // long click
+                  console.log("touchHold", x, y)
+                  return wdaSwipe(startX, startY, x, y, duration)
+                }
+              } else {
+                console.log("swipe:", mousePos.down, "to", { x, y }, duration)
+                return wdaSwipe(startX, startY, x, y, 100)
+              }
+            }
+
+            const mouseDownListener = (event) => {
+              let e = event;
+              if (e.originalEvent) {
+                e = e.originalEvent
+              }
+              e.preventDefault()
+
+              // Middle click equals HOME
+              if (e.which === 2) {
+                this.pressHome()
+                return
+              }
+
+              fakePinch = e.altKey
+              calculateBounds()
+
+              let { fingerX, fingerY, x, y } = coords(e)
+
+              activeFinger(0, fingerX, fingerY);
+              mousePos.beganAt = new Date()
+              mousePos.down = { x, y }
+
+              document.addEventListener('mousemove', mouseMoveListener);
+              document.addEventListener('mouseup', mouseUpListener);
+            }
+
+            function mouseMoveListener(event) {
+              var e = event
+              if (e.originalEvent) {
+                e = e.originalEvent
+              }
+              e.preventDefault()
+
+              let { fingerX, fingerY } = coords(e)
+              var pressure = 0.5
+              activeFinger(1, fingerX, fingerY, pressure);
+            }
+
+            function mouseUpListener(event) {
+              var e = event
+              if (e.originalEvent) {
+                e = e.originalEvent
+              }
+              e.preventDefault()
+
+              element.style.cursor = "not-allowed" // not working
+              element.style.pointerEvents = "none"
+
+              let { fingerX, fingerY, x, y } = coords(e)
+
+              activeFinger(1, fingerX, fingerY);
+
+              stopMousing()
+              element.removeEventListener("mousedown", mouseDownListener)
+
+              mouseUpOperate(x, y).then(() => {
+                recoverFingersAndMouse()
+              })
+            }
+
+            function stopMousing() {
+              document.removeEventListener('mousemove', mouseMoveListener);
+              document.removeEventListener('mouseup', mouseUpListener);
+            }
+
+            function activeFinger(index, x, y, pressure) {
+              var scale = 0.5 + (pressure || 0.5)
+              $(".finger-" + index)
+                .addClass("active")
+                .css("transform", 'translate3d(' + x + 'px,' + y + 'px,0)')
+            }
+
+            function deactiveFinger(index) {
+              $(".finger-" + index).removeClass("active")
+            }
+
+            function recoverFingersAndMouse() {
+              deactiveFinger(0)
+              deactiveFinger(1)
+              element.style.cursor = ""
+              element.style.pointerEvents = ""
+              element.addEventListener('mousedown', mouseDownListener);
+            }
+
+            function preventHandler(event) {
+              event.preventDefault()
+            }
+
+            /* bind listeners */
+            element.addEventListener('mousedown', mouseDownListener);
+          },
+          fitCanvas(canvas) {
+            if (canvas.width > canvas.height) {
+              // 横屏显示，宽高相等
+              this.canvasStyle.maxHeight = canvas.parentElement.clientHeight + "px";
+              this.canvasStyle.height = "auto"
+              this.canvasStyle.width = canvas.parentElement.clientHeight + "px"
+            } else {
+              this.canvasStyle.maxHeight = "unset"
+              this.canvasStyle.height = canvas.parentElement.clientHeight + "px"
+              this.canvasStyle.width = "auto"
+            }
+          },
+          drawBlobImageToCanvas(blob, canvas, landscape) {
+            // Support jQuery Promise
+            var dtd = $.Deferred();
+            var ctx = canvas.getContext('2d'),
+              URL = window.URL || window.webkitURL,
+              BLANK_IMG =
+                'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==',
+              img = this.imagePool.next();
+
+            img.onload = () => {
+              canvas.width = img.width
+              canvas.height = img.height
+
+              ctx.drawImage(img, 0, 0, img.width, img.height);
+
+              if (landscape) {
+                // 顺时针旋转 270°
+                canvas.width = img.height
+                canvas.height = img.width
+
+                ctx.save()
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.rotate(1.5 * Math.PI);
+                ctx.drawImage(img,
+                  -img.width / 2,
+                  -img.height / 2);
+                ctx.restore();
+              }
+              this.fitCanvas(canvas)
+
+              // Try to forcefully clean everything to get rid of memory
+              // leaks. Note self despite this effort, Chrome will still
+              // leak huge amounts of memory when the developer tools are
+              // open, probably to save the resources for inspection. When
+              // the developer tools are closed no memory is leaked.
+              img.onload = img.onerror = null
+              img.src = BLANK_IMG
+              img = null
+              blob = null
+
+              URL.revokeObjectURL(url)
+              url = null
+              dtd.resolve();
+            }
+
+            img.onerror = function () {
+              // Happily ignore. I suppose this shouldn't happen, but
+              // sometimes it does, presumably when we're loading images
+              // too quickly.
+
+              // Do the same cleanup here as in onload.
+              img.onload = img.onerror = null
+              img.src = BLANK_IMG
+              img = null
+              blob = null
+
+              URL.revokeObjectURL(url)
+              url = null
+              dtd.reject();
+            }
+
+            var url = URL.createObjectURL(blob)
+            img.src = url;
+            return dtd;
+          }
+        },
+        mounted: function () {
+          this.canvas.bg = this.$refs.bgCanvas;
+          this.canvas.video = this.$refs.qvhVideo
+
+          this.mirrorDisplay()
+          this.syncTouchpad()
+          // this.hotfix()
+
+          // show fps
+          this.showFPS()
+        },
+      })
+          </script>
+    </body>
+</html>
+
