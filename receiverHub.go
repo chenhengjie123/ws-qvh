@@ -4,7 +4,7 @@ import (
 	"github.com/chenhengjie123/quicktime_video_hack/screencapture"
 	log "github.com/sirupsen/logrus"
 	"sync"
-	"time"
+	// "time"
 )
 
 const (
@@ -61,6 +61,9 @@ func (r *ReceiverHub) AddClient(c *Client) {
 	}
 	status := &ClientReceiveStatus{}
 	r.clients[c] = status
+	log.Debugf("[%s]Add client: %v", r.udid, c)
+	
+	// ReceiverHub 是一个设备只有一个的，因此这里steaming就是指代这个设备是否在接收数据
 	if !r.streaming {
 		r.streaming = true
 		r.stopReading = make(chan interface{})
@@ -81,16 +84,19 @@ func (r *ReceiverHub) DelClient(c *Client) {
 	r.mutex.Unlock()
 	if len(r.clients) == 0 {
 		go func() {
-			time.Sleep(10 * time.Second)
-			select {
-			case r.timeoutChannel <- true:
-				break
-			default:
-				break
-			}
+			r.timeoutChannel <- true
+			// 延迟一秒再发送关闭信号（试过去掉这1秒，结果结束信号的发出会出问题）
+			// time.Sleep(1 * time.Second)
+			// select {
+			// case r.timeoutChannel <- true:
+			// 	break
+			// default:
+			// 	break
+			// }
 		}()
 		go func() {
 			doStop := <-r.timeoutChannel
+			log.Debugf("Delete client due to receive r.timeoutChannel is true")
 			if doStop {
 				c.hub.deleteReceiver(r)
 				r.streaming = false
@@ -126,6 +132,7 @@ func (r *ReceiverHub) stream() {
 		if err != nil {
 			log.Error("adapter.StartReading(device, &mp, r.stopReading): ", err)
 		}
+		log.Debugf("adapter.StartReading is finished")
 		r.writer.Stop()
 	}()
 }
