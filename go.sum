@@ -11,6 +11,8 @@ github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230330141351-956ba93eeeb
 github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230330141351-956ba93eeebc/go.mod h1:hFuBQeqtJo32w4lVABniL2Opm3ABsMMGeBp2pS7ppvY=
 github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230330141607-24881eeb8ab8 h1:OvIdRZyel/JC5OOTBB2ElM+g//lkQ13gUS4ePzq0LyY=
 github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230330141607-24881eeb8ab8/go.mod h1:hFuBQeqtJo32w4lVABniL2Opm3ABsMMGeBp2pS7ppvY=
+github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230401031452-1ae92f5c0848 h1:su4cdjp6gzoNQgtRD0ePy5721OQMopfGD4BramSrgO0=
+github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230401031452-1ae92f5c0848/go.mod h1:hFuBQeqtJo32w4lVABniL2Opm3ABsMMGeBp2pS7ppvY=
 github.com/danielpaulus/go-ios v1.0.13 h1:MFc/QOcNXRY2vv/KRijES/sI0+aHTXfzgEeK6qsZOOU=
 github.com/danielpaulus/go-ios v1.0.13/go.mod h1:k+X7QB2ffFOhTkly/nNwvV1VIysif1MWS1s8GgYXpU4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

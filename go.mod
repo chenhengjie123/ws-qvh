@@ -3,7 +3,7 @@ module github.com/NetrisTV/ws-qvh
 go 1.15
 
 require (
-	github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230330141607-24881eeb8ab8
+	github.com/chenhengjie123/quicktime_video_hack v0.0.0-20230401031452-1ae92f5c0848
 	github.com/gorilla/websocket v1.4.1
 	github.com/sirupsen/logrus v1.9.0
 	golang.org/x/sys v0.6.0 // indirect

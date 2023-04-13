@@ -115,7 +115,6 @@ func (r *ReceiverHub) stream() {
 	}
 
 	log.Debugf("Enabling device: %v", device)
-	log.Debugf("Enabling in stream 11:54")
 	device, err = screencapture.EnableQTConfig(device)
 	if err != nil {
 		log.Errorf("Error enabling QT config", err)
