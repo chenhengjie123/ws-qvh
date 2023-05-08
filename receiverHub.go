@@ -1,9 +1,10 @@
 package main
 
 import (
+	"sync"
+
 	"github.com/chenhengjie123/quicktime_video_hack/screencapture"
 	log "github.com/sirupsen/logrus"
-	"sync"
 	// "time"
 )
 
@@ -62,7 +63,7 @@ func (r *ReceiverHub) AddClient(c *Client) {
 	status := &ClientReceiveStatus{}
 	r.clients[c] = status
 	log.Debugf("[%s]Add client: %v", r.udid, c)
-	
+
 	// ReceiverHub 是一个设备只有一个的，因此这里steaming就是指代这个设备是否在接收数据
 	if !r.streaming {
 		r.streaming = true
@@ -123,10 +124,13 @@ func (r *ReceiverHub) stream() {
 
 	log.Debugf("device actived: ", device.DetailsMap())
 
+	// 创建数据消费者。此处通过 NanuWriter 来消费数据
 	r.writer = NewNaluWriter(r)
 	adapter := screencapture.UsbAdapter{}
+	// 创建数据处理器
 	mp := screencapture.NewMessageProcessor(&adapter, r.stopReading, r.writer, false)
 	go func() {
+		// 开始启动 quicktime 数据获取流程，持续获取数据
 		err := adapter.StartReading(device, &mp, r.stopReading)
 		if err != nil {
 			log.Error("adapter.StartReading(device, &mp, r.stopReading): ", err)
@@ -160,6 +164,9 @@ func (r *ReceiverHub) run() {
 				}
 				client.mutex.Lock()
 				nalUnitType := data[4] & 31
+
+				// 为了保证每个client都是按照 PPS-SPS-SEI-视频帧（I帧/P帧/B帧）顺序发送，所以这里需要做一些处理，暂时存下前面几个特殊帧数据
+				// 后续有新client加入时，先把存储的特殊帧数据发送给新client，再继续正常发送视频帧数据。这样来保证新的 client 可以获得足够的参数进行正常解码
 				if nalUnitType == PPS {
 					r.storeNalUnit(&r.pps, &data)
 				} else if nalUnitType == SPS {
@@ -195,6 +202,7 @@ func (r *ReceiverHub) run() {
 						}
 					}
 					isIframe := nalUnitType == IDR
+					// IDR 帧是 I 帧，I 帧是关键帧，是可以单独解码的帧。缺少I帧会导致视频无法解析，因此这里需要判断是否是 I 帧，非I帧都先丢弃。
 					if status.gotPPS && status.gotSPS && status.gotSEI && isIframe {
 						status.gotIFrame = true
 						*client.send <- data
