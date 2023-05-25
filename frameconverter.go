@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"unsafe"
 
 	// "github.com/chenhengjie123/gmf"
@@ -27,7 +28,8 @@ type FrameConverter struct {
 func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 
 	// Initialize the AVCodecContext and AVFrame
-	codec := avcodec.AvcodecFindDecoder(avcodec.CodecId(avcodec.AV_CODEC_ID_H264))
+	avcodec.AvcodecRegisterAll()
+	codec := avcodec.AvcodecFindDecoder(avcodec.CodecId(avcodec.AV_CODEC_ID_H261))
 	if codec == nil {
 		fmt.Errorf("failed to find codec")
 	}
@@ -45,16 +47,6 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 		fmt.Errorf("failed to allocate frame")
 	}
 	defer avutil.AvFrameFree(frame)
-
-	// Scale the frame to the desired size
-	swsCtx := swscale.SwsGetcontext(
-		codecCtx.Width(), codecCtx.Height(), (swscale.PixelFormat)(codecCtx.PixFmt()),
-		width, height, avcodec.AV_PIX_FMT_RGB24,
-		avcodec.SWS_BILINEAR, nil, nil, nil,
-	)
-	if swsCtx == nil {
-		fmt.Errorf("failed to create scaling context")
-	}
 
 	// defer swscale.SwsFreeContext(swsCtx)
 	scaledFrame := avutil.AvFrameAlloc()
@@ -74,6 +66,8 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 	}
 	defer encoderCtx.AvcodecClose()
 
+	// fixme: ffmpeg编译加上x264
+
 	// encoderCtx.SetBitRate(int64(bitrate))
 	// encoderCtx.SetWidth(width)
 	// encoderCtx.SetHeight(height)
@@ -86,7 +80,7 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 	}
 
 	return &FrameConverter{codec: codec, codecCtx: codecCtx, frame: frame,
-		swsCtx: swsCtx, scaledFrame: scaledFrame, encoder: encoder, encoderCtx: encoderCtx}
+		scaledFrame: scaledFrame, encoder: encoder, encoderCtx: encoderCtx}
 }
 
 // 进行帧数据转换
@@ -118,6 +112,20 @@ func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
 	if avutil.AvFrameGetBuffer(fc.scaledFrame, 32) < 0 {
 		return nil, fmt.Errorf("failed to allocate buffer for scaled frame")
 	}
+
+	// Scale the frame to the desired size
+	if fc.swsCtx == nil {
+		privateSwsCtx := swscale.SwsGetcontext(
+			fc.codecCtx.Width(), fc.codecCtx.Height(), (swscale.PixelFormat)(fc.codecCtx.PixFmt()),
+			fc.width, fc.height, avcodec.AV_PIX_FMT_RGB24,
+			avcodec.SWS_BILINEAR, nil, nil, nil,
+		)
+		if privateSwsCtx == nil {
+			log.Fatalf("failed to create swscale context")
+		}
+		fc.swsCtx = privateSwsCtx
+	}
+
 	if swscale.SwsScale2(
 		fc.swsCtx, avutil.Data(fc.frame), avutil.Linesize(fc.frame),
 		0, fc.codecCtx.Height(),
