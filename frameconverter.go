@@ -13,16 +13,18 @@ import (
 )
 
 type FrameConverter struct {
-	width       int
-	height      int
-	bitrate     int
-	codec       *libavcodec.AVCodec
-	codecCtx    *libavcodec.AVCodecContext
-	frame       *libavutil.AVFrame
-	swsCtx      *libswscale.SwsContext
-	scaledFrame *libavutil.AVFrame
-	encoder     *libavcodec.AVCodec
-	encoderCtx  *libavcodec.AVCodecContext
+	targetWidth   int
+	targetHeight  int
+	targetBitrate int
+	originWidth   int
+	originHeight  int
+	codec         *libavcodec.AVCodec
+	codecCtx      *libavcodec.AVCodecContext
+	frame         *libavutil.AVFrame
+	swsCtx        *libswscale.SwsContext
+	scaledFrame   *libavutil.AVFrame
+	encoder       *libavcodec.AVCodec
+	encoderCtx    *libavcodec.AVCodecContext
 }
 
 func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
@@ -47,6 +49,16 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 		fmt.Errorf("failed to allocate codec context")
 	}
 	defer codecCtx.AvcodecClose()
+
+	codecParams := libavcodec.AvcodecParametersAlloc()
+	if codecParams == nil {
+		fmt.Errorf("failed to allocate codec parameters")
+	}
+	codecParams.CodecType = libavutil.AVMEDIA_TYPE_VIDEO
+	codecParams.CodecId = libavcodec.AV_CODEC_ID_H264
+	codecParams.Format = libavutil.AV_PIX_FMT_YUV420P
+	codecCtx.AvcodecParametersToContext(codecParams)
+	libavcodec.AvcodecParametersFree(&codecParams)
 
 	if codecCtx.AvcodecOpen2(codec, nil) < 0 {
 		fmt.Errorf("failed to open codec")
@@ -83,7 +95,6 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 	encoderCtx.Height = int32(height)
 	encoderCtx.BitRate = int64(bitrate)
 	encoderCtx.GopSize = 10
-	encoderCtx.MaxBFrames = 0
 	encoderCtx.PixFmt = int32(libavutil.AV_PIX_FMT_YUV420P)
 	encoderCtx.AvCodecSetPktTimebase(libavutil.AVRational{1, 25})
 
@@ -92,7 +103,8 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 		fmt.Errorf("failed to open encoder")
 	}
 
-	return &FrameConverter{codec: codec, codecCtx: codecCtx, frame: frame,
+	return &FrameConverter{targetWidth: width, targetHeight: height, targetBitrate: bitrate,
+		codec: codec, codecCtx: codecCtx, frame: frame,
 		scaledFrame: scaledFrame, encoder: encoder, encoderCtx: encoderCtx}
 }
 
@@ -107,6 +119,87 @@ func PointerToBytes(pointer unsafe.Pointer, size int) []byte {
 
 // 进行帧数据转换
 func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
+	// 初始化
+	ffcommon.SetAvcodecPath("/usr/local/ffmpeg/lib/libavcodec.dylib")
+	ffcommon.SetAvutilPath("/usr/local/ffmpeg/lib/libavutil.dylib")
+	ffcommon.SetAvdevicePath("/usr/local/ffmpeg/lib/libavdevice.dylib")
+	ffcommon.SetAvfilterPath("/usr/local/ffmpeg/lib/libavfilter.dylib")
+	ffcommon.SetAvformatPath("/usr/local/ffmpeg/lib/libavformat.dylib")
+	ffcommon.SetAvpostprocPath("/usr/local/ffmpeg/lib/libpostproc.dylib")
+	ffcommon.SetAvswresamplePath("/usr/local/ffmpeg/lib/libswresample.dylib")
+	ffcommon.SetAvswscalePath("/usr/local/ffmpeg/lib/libswscale.dylib")
+
+	// Initialize the AVCodecContext and AVFrame
+	decodeCodec := libavcodec.AvcodecFindDecoder(libavcodec.AV_CODEC_ID_H264)
+	if decodeCodec == nil {
+		fmt.Errorf("failed to find codec")
+	}
+	decodeCodecCtx := decodeCodec.AvcodecAllocContext3()
+	if decodeCodecCtx == nil {
+		fmt.Errorf("failed to allocate codec context")
+	}
+	defer decodeCodecCtx.AvcodecClose()
+
+	decodeCodecParams := libavcodec.AvcodecParametersAlloc()
+	if decodeCodecParams == nil {
+		fmt.Errorf("failed to allocate codec parameters")
+	}
+	decodeCodecParams.CodecType = libavutil.AVMEDIA_TYPE_VIDEO
+	decodeCodecParams.CodecId = libavcodec.AV_CODEC_ID_H264
+	decodeCodecParams.Format = libavutil.AV_PIX_FMT_YUV420P
+	decodeCodecCtx.AvcodecParametersToContext(decodeCodecParams)
+	libavcodec.AvcodecParametersFree(&decodeCodecParams)
+	decodeCodecCtx.Width = int32(fc.originWidth)
+	decodeCodecCtx.Height = int32(fc.originHeight)
+
+	if decodeCodecCtx.AvcodecOpen2(decodeCodec, nil) < 0 {
+		fmt.Errorf("failed to open codec")
+	}
+	frame := libavutil.AvFrameAlloc()
+	if frame == nil {
+		fmt.Errorf("failed to allocate frame")
+	}
+	defer libavutil.AvFrameFree(&frame)
+
+	// defer libswscale.SwsFreeContext(swsCtx)
+	scaledFrame := libavutil.AvFrameAlloc()
+	if scaledFrame == nil {
+		fmt.Errorf("failed to allocate scaled frame")
+	}
+	defer libavutil.AvFrameFree(&scaledFrame)
+
+	// Encode the scaled frame into a new packet
+	encoder := libavcodec.AvcodecFindEncoder(libavcodec.AV_CODEC_ID_H264)
+	if encoder == nil {
+		fmt.Errorf("failed to find encoder")
+	}
+	encoderCtx := encoder.AvcodecAllocContext3()
+	if encoderCtx == nil {
+		fmt.Errorf("failed to allocate encoder context")
+	}
+	defer encoderCtx.AvcodecClose()
+
+	// ffmpeg编译加上x264
+	// FIXME: 找到下面 setParams 对应的函数
+	// encoderCtx.SetEncodeParams2(width, height, (libavcodec.PixelFormat)(libavcodec.AV_PIX_FMT_YUV420P), false, 10)
+
+	encoderCtx.Width = int32(fc.targetWidth)
+	encoderCtx.Height = int32(fc.targetHeight)
+	// encoderCtx.BitRate = int64(fc.bitrate)
+	encoderCtx.GopSize = 10
+	encoderCtx.PixFmt = int32(libavutil.AV_PIX_FMT_YUV420P)
+	encoderCtx.TimeBase.Num = 1
+	encoderCtx.TimeBase.Den = 29
+
+	// fixme: 删掉这个强制把编码器大小设定为和原始帧大小一致的设定
+	encoderCtx.Width = int32(fc.originWidth)
+	encoderCtx.Height = int32(fc.originHeight)
+
+	// encoderCtx.SetBitRate(int64(bitrate))
+	if encoderCtx.AvcodecOpen2(encoder, nil) < 0 {
+		fmt.Errorf("failed to open encoder")
+	}
+
 	// Decode the frame data into the AVFrame
 	packet := libavcodec.AvPacketAlloc()
 	packet.AvInitPacket()
@@ -122,38 +215,43 @@ func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
 	// data := PointerToBytes(unsafe.Pointer(packet.Data()), int(packet.Size()))
 	// print(data)
 
-	response := fc.codecCtx.AvcodecSendPacket(packet)
+	// if fc.codecCtx.AvcodecOpen2(&fc.codec, nil) < 0 {
+	// 	fmt.Errorf("failed to open codec")
+	// }
+
+	// 解码
+	response := decodeCodecCtx.AvcodecSendPacket(packet)
 	if response < 0 {
 		return nil, fmt.Errorf("failed to send packet")
 	}
-	// got_picture := ffcommon.FInt(0)
-	// response := fc.codecCtx.AvcodecDecodeVideo2((*libavcodec.AVFrame)(unsafe.Pointer(fc.frame)), &got_picture, packet)
-	// if response < 0 {
-	// 	return nil, fmt.Errorf("failed to decode video")
-	// }
-	// if got_picture <= 0 {
-	// 	return nil, fmt.Errorf("got picture failed")
-	// }
 
-	response = fc.codecCtx.AvcodecReceiveFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.frame)))
+	response = decodeCodecCtx.AvcodecReceiveFrame((*libavcodec.AVFrame)(unsafe.Pointer(frame)))
 	if response < 0 {
 		return nil, fmt.Errorf("failed to receive frame")
 	}
 
+	// 为缩放后的新 frame 分配空间
+	// response = libavutil.AvImageAlloc(scaledFrame.&Data, scaledFrame.&Linesize,
+	// 	decodeCodecCtx.Width, decodeCodecCtx.Height, decodeCodecCtx.PixFmt, 16)
+	// if response < 0 {
+	// 	fmt.Println("Could not allocate target image")
+	// 	goto end
+	// }
+
 	// libavutil.frame(fc.scaledFrame, fc.width, fc.height, libavutil.AV_PIX_FMT_YUV420P9)
-	// // scaledFrame.setWidth(width)
-	// // scaledFrame.SetHeight(height)
-	// // scaledFrame.SetFormat(int32(libavcodec.AV_PIX_FMT_YUV420P9))
+	// scaledFrame.setWidth(width)
+	// scaledFrame.SetHeight(height)
+	// scaledFrame.SetFormat(int32(libavcodec.AV_PIX_FMT_YUV420P9))
 	// if libavutil.AvFrameGetBuffer(fc.scaledFrame, 32) < 0 {
 	// 	return nil, fmt.Errorf("failed to allocate buffer for scaled frame")
 	// }
 
 	// Scale the frame to the desired size
 	// if fc.swsCtx == nil {
-	// 	privateSwsCtx := libswscale.SwsGetcontext(
-	// 		fc.codecCtx.Width(), fc.codecCtx.Height(), (libswscale.PixelFormat)(fc.codecCtx.PixFmt()),
-	// 		fc.width, fc.height, libavcodec.AV_PIX_FMT_RGB24,
-	// 		libavcodec.SWS_BILINEAR, nil, nil, nil,
+	// 	privateSwsCtx := libswscale.SwsGetContext(
+	// 		encoderCtx.Width, encoderCtx.Height, encoderCtx.PixFmt,
+	// 		decodeCodecCtx.Width, decodeCodecCtx.Height, libavutil.AV_PIX_FMT_RGB24,
+	// 		libswscale.SWS_BILINEAR, nil, nil, nil,
 	// 	)
 	// 	if privateSwsCtx == nil {
 	// 		log.Fatalf("failed to create swscale context")
@@ -175,10 +273,14 @@ func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
 	}
 	defer encodedPacket.AvFreePacket()
 
-	if fc.encoderCtx.AvcodecSendFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.scaledFrame))) < 0 {
+	// 重新编码
+	// fixme: 手动设定 pts
+	frame.Pts = 0
+	if encoderCtx.AvcodecSendFrame((*libavcodec.AVFrame)(unsafe.Pointer(frame))) < 0 {
 		return nil, fmt.Errorf("failed to send frame to encoder")
 	}
-	if fc.encoderCtx.AvcodecReceivePacket(packet) < 0 {
+	response = encoderCtx.AvcodecReceivePacket(encodedPacket)
+	if response < 0 {
 		return nil, fmt.Errorf("failed to receive packet from encoder")
 	}
 

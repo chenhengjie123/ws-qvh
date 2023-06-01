@@ -2,8 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
-	"io/ioutil"
 
 	"github.com/chenhengjie123/quicktime_video_hack/screencapture/coremedia"
 	log "github.com/sirupsen/logrus"
@@ -12,14 +10,18 @@ import (
 var startCode = []byte{00, 00, 00, 01}
 var tmpIndex = 0
 var totalFrameData = []byte{}
+var sps, pps, sei []byte
 
 type NaluWriter struct {
-	receiver       *ReceiverHub
-	frameConverter *FrameConverter
+	receiver             *ReceiverHub
+	frameConverter       *FrameConverter
+	videoDimensionWidth  int
+	videoDimensionHeight int
 }
 
-func NewNaluWriter(cliend *ReceiverHub) *NaluWriter {
-	return &NaluWriter{receiver: cliend, frameConverter: NewFrameConverter(1280, 720, 1000000)}
+func NewNaluWriter(client *ReceiverHub) *NaluWriter {
+	frameConverter := NewFrameConverter(1280, 720, 1000000)
+	return &NaluWriter{receiver: client, frameConverter: frameConverter}
 }
 
 func (nw NaluWriter) consumeVideo(buf coremedia.CMSampleBuffer) error {
@@ -29,29 +31,33 @@ func (nw NaluWriter) consumeVideo(buf coremedia.CMSampleBuffer) error {
 	ppsAndSpsData := []byte{}
 
 	if buf.HasFormatDescription {
-		ppsData := append(startCode, buf.FormatDescription.PPS...)
-		spsData := append(startCode, buf.FormatDescription.SPS...)
+		// ppsData := append(startCode, buf.FormatDescription.PPS...)
+		// spsData := append(startCode, buf.FormatDescription.SPS...)
 
 		// ppsData := buf.FormatDescription.PPS
 		// spsData := buf.FormatDescription.SPS
 
-		ppsAndSpsData = append(ppsAndSpsData, ppsData...)
-		ppsAndSpsData = append(ppsAndSpsData, spsData...)
+		// ppsAndSpsData = append(ppsAndSpsData, ppsData...)
+		// ppsAndSpsData = append(ppsAndSpsData, spsData...)
 
-		// // SPS 和 PPS 是特殊帧，仅包含后续解析用的参数数据，不包含视频帧数据，不能用writeNalus根据quicktime格式切割帧内容
-		// // 因此需要单独发送。
-		// // 详细信息可参考：https://blog.csdn.net/huabiaochen/article/details/120321905
+		// SPS 和 PPS 是特殊帧，仅包含后续解析用的参数数据，不包含视频帧数据，不能用writeNalus根据quicktime格式切割帧内容
+		// 因此需要单独发送。
+		// 详细信息可参考：https://blog.csdn.net/huabiaochen/article/details/120321905
 
-		// // PPS 帧，直接发送
-		// err := nw.writeNalu(buf.FormatDescription.PPS)
-		// if err != nil {
-		// 	return err
-		// }
-		// // SPS 帧，直接发送
-		// err = nw.writeNalu(buf.FormatDescription.SPS)
-		// if err != nil {
-		// 	return err
-		// }
+		// PPS 帧，直接发送
+		err := nw.writeNalu(buf.FormatDescription.PPS)
+		if err != nil {
+			return err
+		}
+		// SPS 帧，直接发送
+		err = nw.writeNalu(buf.FormatDescription.SPS)
+		if err != nil {
+			return err
+		}
+
+		// 获取原始视频宽高
+		nw.videoDimensionWidth = int(buf.FormatDescription.VideoDimensionWidth)
+		nw.videoDimensionHeight = int(buf.FormatDescription.VideoDimensionHeight)
 	}
 
 	if !buf.HasSampleData() {
@@ -73,20 +79,20 @@ func (nw NaluWriter) Consume(buf coremedia.CMSampleBuffer) error {
 
 func (nw NaluWriter) writeNalus(bytes []byte, spsAndPpsData []byte) error {
 	slice := bytes
-	isFirstFrame := true
+	// isFirstFrame := true
 	for len(slice) > 0 {
 		// 这里是在根据大端序（quicktime用的就是大端序），把数据的前4位转换为10进制数字，这个数字表示了后面视频帧的有效数据长度
 		// 参考文档：https://www.cnblogs.com/-wenli/p/12323809.html
 		length := binary.BigEndian.Uint32(slice)
 
-		frameData := append(startCode, slice[4:length+4]...)
-		// frameData := slice[4 : length+4]
+		// frameData := append(startCode, slice[4:length+4]...)
+		frameData := slice[4 : length+4]
 
-		// 首帧数据，加上 SPS 和 PPS 数据
-		if isFirstFrame && len(spsAndPpsData) > 0 {
-			frameData = append(spsAndPpsData, frameData...)
-			isFirstFrame = false
-		}
+		// // 首帧数据，加上 SPS 和 PPS 数据
+		// if isFirstFrame && len(spsAndPpsData) > 0 {
+		// 	frameData = append(spsAndPpsData, frameData...)
+		// 	isFirstFrame = false
+		// }
 
 		err := nw.writeNalu(frameData)
 		if err != nil {
@@ -104,32 +110,59 @@ func (nw NaluWriter) writeNalu(bytes []byte) error {
 	}
 
 	if len(bytes) > 0 {
-		log.Debug("Send bytes "+string(startCode)+" with length: ", len(bytes))
+		log.Debug("Send bytes with length: ", len(bytes))
 		// 发送具体的 nalu 单元数据给 receiver 的 send 通道。receiver 会再把这些数据发送给对应的 websocket client
 		// nw.receiver.send <- append(startCode, bytes...)
-		frameData := bytes
-		totalFrameData = append(totalFrameData, frameData...)
-		log.Info("合并帧数据长度：", len(totalFrameData), tmpIndex)
+		frameData := append(startCode, bytes...)
 
-		if tmpIndex == 60 {
-			filename := fmt.Sprintf("./tmp.h264")
-			log.Info("写入文件：", filename)
-			err := ioutil.WriteFile(filename, totalFrameData, 0644)
-			if err != nil {
-				log.Error("写入文件出错：", err)
-			}
+		// quicktime 传输帧数据的时候，pps、sps、sei、idr 帧都是单独的帧，不包含在一起。
+		// 因此遇到首个idr帧的时候，需要在它前面补上 pps、sps、sei 帧数据，才能形成完整首帧数据，进行转码
+		nalUnitType := frameData[4] & 31
+		if nalUnitType == PPS {
+			pps = frameData
+			return nil
+		} else if nalUnitType == SPS {
+			sps = frameData
+			return nil
+		} else if nalUnitType == SEI {
+			sei = frameData
+			return nil
+		} else if nalUnitType == IDR {
+			// 统一加上 pps、sps、sei 帧数据
+			firstFrameData := append(sps, pps...)
+			firstFrameData = append(firstFrameData, sei...)
+			firstFrameData = append(firstFrameData, frameData...)
+			frameData = firstFrameData
+		} else {
+			// 其它帧，直接发送
+			frameData = frameData
 		}
 
-		tmpIndex++
+		// 进行转码
+		nw.frameConverter.originWidth = nw.videoDimensionWidth
+		nw.frameConverter.originHeight = nw.videoDimensionHeight
+		convertedData, err := nw.frameConverter.convertFrame(frameData)
+		if err != nil {
+			log.Error("Failed to convert frame: ", err)
+		}
 
-		// 前4个字节是长度，第5个开始，到长度值+4的位置，是具体的视频帧数据。所以实际发送的视频数据，只需要发送这部分即可
-		// convertedData, err := nw.frameConverter.convertFrame(frameData)
-		// if err != nil {
-		// 	log.Error("Failed to convert frame: ", err)
+		// 发送转码后的帧数据
+		nw.receiver.send <- convertedData
+
+		// totalFrameData = append(totalFrameData, frameData...)
+		// log.Info("合并帧数据长度：", len(totalFrameData), tmpIndex)
+
+		// if tmpIndex == 120 {
+		// 	filename := fmt.Sprintf("./tmp.h264")
+		// 	log.Info("写入文件：", filename)
+		// 	err := ioutil.WriteFile(filename, totalFrameData, 0644)
+		// 	if err != nil {
+		// 		log.Error("写入文件出错：", err)
+		// 	}
 		// }
 
-		// 不添加 startCode ，直接发送
-		// nw.receiver.send <- convertedData
+		// tmpIndex++
+
 	}
 	return nil
 }
