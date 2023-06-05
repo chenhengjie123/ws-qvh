@@ -9,6 +9,7 @@ import (
 	"github.com/chenhengjie123/ffmpeg-go/libavcodec"
 	"github.com/chenhengjie123/ffmpeg-go/libavutil"
 	"github.com/chenhengjie123/ffmpeg-go/libswscale"
+	log "github.com/sirupsen/logrus"
 	// "github.com/giorgisio/goav/swscale"
 )
 
@@ -20,7 +21,7 @@ type FrameConverter struct {
 	originHeight  int
 	decoder       *libavcodec.AVCodec
 	decodeCtx     *libavcodec.AVCodecContext
-	frame         *libavutil.AVFrame
+	origFrame     *libavutil.AVFrame
 	swsCtx        *libswscale.SwsContext
 	scaledFrame   *libavutil.AVFrame
 	encoder       *libavcodec.AVCodec
@@ -66,13 +67,6 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 	}
 	defer libavutil.AvFrameFree(&frame)
 
-	// defer libswscale.SwsFreeContext(swsCtx)
-	scaledFrame := libavutil.AvFrameAlloc()
-	if scaledFrame == nil {
-		fmt.Errorf("failed to allocate scaled frame")
-	}
-	defer libavutil.AvFrameFree(&scaledFrame)
-
 	// Encode the scaled frame into a new packet
 	encoder := libavcodec.AvcodecFindEncoder(libavcodec.AV_CODEC_ID_H264)
 	if encoder == nil {
@@ -96,8 +90,15 @@ func NewFrameConverter(width int, height int, bitrate int) *FrameConverter {
 	encoderCtx.TimeBase.Num = 1
 	encoderCtx.TimeBase.Den = 29
 
+	// defer libswscale.SwsFreeContext(swsCtx)
+	scaledFrame := libavutil.AvFrameAlloc()
+	if scaledFrame == nil {
+		fmt.Errorf("failed to allocate scaled frame")
+	}
+	defer libavutil.AvFrameFree(&scaledFrame)
+
 	return &FrameConverter{targetWidth: width, targetHeight: height, targetBitrate: bitrate,
-		decoder: decoder, decodeCtx: decodeCtx, frame: frame,
+		decoder: decoder, decodeCtx: decodeCtx, origFrame: frame,
 		scaledFrame: scaledFrame, encoder: encoder, encoderCtx: encoderCtx}
 }
 
@@ -156,47 +157,48 @@ func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to send packet")
 	}
 
-	response = fc.decodeCtx.AvcodecReceiveFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.frame)))
+	response = fc.decodeCtx.AvcodecReceiveFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.origFrame)))
 	if response < 0 {
 		return nil, fmt.Errorf("failed to receive frame")
 	}
 
+	// 初始化缩放
+	if fc.swsCtx == nil {
+		privateSwsCtx := libswscale.SwsGetContext(
+			fc.decodeCtx.Width, fc.decodeCtx.Height, fc.origFrame.Format,
+			fc.encoderCtx.Width, fc.encoderCtx.Height, fc.encoderCtx.PixFmt,
+			libswscale.SWS_BILINEAR, nil, nil, nil,
+		)
+		if privateSwsCtx == nil {
+			log.Fatalf("failed to create swscale context")
+		}
+		fc.swsCtx = privateSwsCtx
+	}
+
 	// 为缩放后的新 frame 分配空间
-	// response = libavutil.AvImageAlloc(scaledFrame.&Data, scaledFrame.&Linesize,
-	// 	decodeCodecCtx.Width, decodeCodecCtx.Height, decodeCodecCtx.PixFmt, 16)
-	// if response < 0 {
-	// 	fmt.Println("Could not allocate target image")
-	// 	goto end
-	// }
+	// fixme: 后面必须挪到初始化位置，否则会重复分配，导致内存暴涨
+	response = libavutil.AvImageAlloc((*[4]*byte)(unsafe.Pointer(&fc.scaledFrame.Data[0])),
+		(*[4]int32)(unsafe.Pointer(&fc.scaledFrame.Linesize[0])),
+		fc.encoderCtx.Width, fc.encoderCtx.Height, fc.encoderCtx.PixFmt, 16)
+	if response < 0 {
+		fmt.Println("Could not allocate target image")
+	}
 
 	// libavutil.frame(fc.scaledFrame, fc.width, fc.height, libavutil.AV_PIX_FMT_YUV420P9)
-	// scaledFrame.setWidth(width)
-	// scaledFrame.SetHeight(height)
-	// scaledFrame.SetFormat(int32(libavcodec.AV_PIX_FMT_YUV420P9))
+	// fc.scaledFrame.setWidth(width)
+	// fc.scaledFrame.SetHeight(height)
+	// fc.scaledFrame.SetFormat(int32(libavcodec.AV_PIX_FMT_YUV420P9))
 	// if libavutil.AvFrameGetBuffer(fc.scaledFrame, 32) < 0 {
 	// 	return nil, fmt.Errorf("failed to allocate buffer for scaled frame")
 	// }
 
-	// Scale the frame to the desired size
-	// if fc.swsCtx == nil {
-	// 	privateSwsCtx := libswscale.SwsGetContext(
-	// 		encoderCtx.Width, encoderCtx.Height, encoderCtx.PixFmt,
-	// 		decodeCodecCtx.Width, decodeCodecCtx.Height, libavutil.AV_PIX_FMT_RGB24,
-	// 		libswscale.SWS_BILINEAR, nil, nil, nil,
-	// 	)
-	// 	if privateSwsCtx == nil {
-	// 		log.Fatalf("failed to create swscale context")
-	// 	}
-	// 	fc.swsCtx = privateSwsCtx
-	// }
-
-	// if libswscale.SwsScale2(
-	// 	fc.swsCtx, libavutil.Data(fc.frame), libavutil.Linesize(fc.frame),
-	// 	0, fc.codecCtx.Height(),
-	// 	libavutil.Data(fc.scaledFrame), libavutil.Linesize(fc.scaledFrame),
-	// ) < 0 {
-	// 	return nil, fmt.Errorf("failed to scale frame")
-	// }
+	fc.swsCtx.SwsScale(
+		(**byte)(unsafe.Pointer(&fc.origFrame.Data)),
+		(*int32)(unsafe.Pointer(&fc.origFrame.Linesize)),
+		0, uint32(fc.decodeCtx.Height),
+		(**byte)(unsafe.Pointer(&fc.scaledFrame.Data)),
+		(*int32)(unsafe.Pointer(&fc.scaledFrame.Linesize)),
+	)
 
 	encodedPacket := libavcodec.AvPacketAlloc()
 	if encodedPacket == nil {
@@ -207,7 +209,7 @@ func (fc FrameConverter) convertFrame(frameData []byte) ([]byte, error) {
 	// 重新编码
 	// // fixme: 手动设定 pts
 	// fc.frame.Pts = 0
-	if fc.encoderCtx.AvcodecSendFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.frame))) < 0 {
+	if fc.encoderCtx.AvcodecSendFrame((*libavcodec.AVFrame)(unsafe.Pointer(fc.origFrame))) < 0 {
 		return nil, fmt.Errorf("failed to send frame to encoder")
 	}
 	response = fc.encoderCtx.AvcodecReceivePacket(encodedPacket)
